@@ -37,7 +37,10 @@ impl ProcessMemory {
             let new_task = if rest == "" {
                 tasks::Task::new()
             } else {
-                let Some(base) = data.tasks.get(&rest.to_lowercase()) else {
+                let Some(base_id) = rest.strip_prefix("=") else {
+                    return Err(format!("expected = or nothing after -n, found {:?}", rest))
+                };
+                let Some(base) = data.tasks.get(&base_id.to_lowercase()) else {
                     return Err(format!("invalid id ({}) for base task", rest))
                 };
                 tasks::Task {
