@@ -19,19 +19,19 @@ impl ProcessMemory {
         }
     }
 
-    fn try_parse_arg(&mut self, data: &mut Data, arg: &String) -> Result<(), String> {
+    fn try_parse_arg(&mut self, mut messages: Vec<String>, data: &mut Data, arg: &String) -> Result<Vec<String>, String> {
         Ok(false)
-        .and_then(|done| self.try_parse_new_task(data, arg, done))
+        .and_then(|done| self.try_parse_new_task(&mut messages, data, arg, done))
         .and_then(|done| {
             if done {
-                Ok(())
+                Ok(messages)
             } else {
                 Err(format!("flag ({}) not recognised", arg))
             }
         })
     }
 
-    fn try_parse_new_task(&mut self, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+    fn try_parse_new_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
         if done { return Ok(done) }
         if let Some(rest) = arg.strip_prefix("-n") {
             let new_task = if rest == "" {
@@ -44,9 +44,9 @@ impl ProcessMemory {
                     return Err(format!("invalid id ({}) for base task", rest))
                 };
                 tasks::Task {
-                    base: Some(format!("{}", rest)),
+                    base: Some(format!("{}", base_id)),
                     tags: base.tags.clone(),
-                    name: None,
+                    name: base.name.clone(),
                     logs: vec![]
                 }
             };
@@ -60,6 +60,7 @@ impl ProcessMemory {
             */ 
             let id = format!("{:08x}", data.tasks_created.wrapping_mul(2654435769));
             data.tasks.insert(id.clone(), new_task);
+            messages.push(format!("task created with id: {}", id));
             self.selected_task_id = Some(id);
             Ok(true)
         } else {
@@ -111,12 +112,15 @@ fn main() {
         tasks::Data::new()
     };
 
-    println!("{}", data.tasks_created);
-
     let mut process_memory = ProcessMemory::new();
 
-    if let Err(error) = iter_args.try_for_each(|arg| process_memory.try_parse_arg(&mut data, arg)) {
-        print!("{}", error)
+    match iter_args.try_fold(
+        vec![],
+        |messages,
+        arg| process_memory.try_parse_arg(messages, &mut data, arg)
+    ) {
+        Ok(messages) => messages.into_iter().for_each(|message| print!("{}", message)),
+        Err(error) => print!("{}", error)
     }
 
     let mut tmp_file = match File::options().write(true).create_new(true).open(tmp_path) {
