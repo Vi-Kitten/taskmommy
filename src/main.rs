@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Write, Error, ErrorKind};
 use std::path::Path;
 use std::time::SystemTime;
 use tasks::*;
@@ -18,7 +18,7 @@ impl ProcessMemory {
         }
     }
 
-    fn try_parse_arg(&mut self, mut messages: Vec<String>, data: &mut Data, arg: &String) -> Result<Vec<String>, String> {
+    fn try_parse_arg(&mut self, mut messages: Vec<String>, data: &mut Data, arg: &String) -> Result<Vec<String>, Error> {
         Ok(false)
         .and_then(|done| self.try_parse_new_task(&mut messages, data, arg, done))
         .and_then(|done| self.try_parse_select_task(&mut messages, data, arg, done))
@@ -27,22 +27,23 @@ impl ProcessMemory {
             if done {
                 Ok(messages)
             } else {
-                Err(format!("flag ({}) not recognised", arg))
+                Err(Error::new(ErrorKind::InvalidInput, format!("flag '{}' not recognised", arg)))
             }
         })
     }
 
-    fn try_parse_new_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+    fn try_parse_new_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, Error> {
         if done { return Ok(done) }
         if let Some(rest) = arg.strip_prefix("-n") {
             let new_task = if rest == "" {
                 tasks::Task::new()
             } else {
                 let Some(base_id) = rest.strip_prefix("=") else {
-                    return Err(format!("expected = or nothing after -n, found {:?}", rest))
+                    return Err(Error::new(ErrorKind::InvalidInput, format!("expected = or nothing after -n, found {:?}", rest)))
+                    
                 };
                 let Some(base) = data.tasks.get(&base_id.to_lowercase()) else {
-                    return Err(format!("invalid id ({}) for base task", base_id))
+                    return Err(Error::new(ErrorKind::NotFound, format!("no task with id '{}' could be found", base_id)))
                 };
                 tasks::Task {
                     time_created: SystemTime::now(),
@@ -70,11 +71,11 @@ impl ProcessMemory {
         }
     }
 
-    fn try_parse_select_task(&mut self, _messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+    fn try_parse_select_task(&mut self, _messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, Error> {
         if done { return Ok(done) }
         if let Some(task_id) = arg.strip_prefix("-s=") {
             if !data.tasks.contains_key(&task_id.to_lowercase()) {
-                return Err(format!("invalid id ({}) for task", task_id))
+                return Err(Error::new(ErrorKind::NotFound, format!("no task with id '{}' could be found", task_id)))
             }
             self.selected_task_id = Some(format!("{}", task_id));
             Ok(true)
@@ -83,11 +84,11 @@ impl ProcessMemory {
         }
     }
 
-    fn try_parse_display_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+    fn try_parse_display_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, Error> {
         if done { return Ok(done) }
         if arg == "-d" {
             let Some(task_id) = &self.selected_task_id else {
-                return Err(format!("no selected task for display"))
+                return Err(Error::new(ErrorKind::InvalidInput, format!("no selected task for display")))
             };
             messages.push(format!("{:?}", data.tasks[task_id]));
             Ok(true)
@@ -97,7 +98,7 @@ impl ProcessMemory {
     }
 }
 
-fn main() {
+fn main() -> Result<(), std::io::Error> {
     let args: Vec<String> = env::args().collect();
 
     let mut iter_args = args.iter();
@@ -105,9 +106,9 @@ fn main() {
     let _app_location = iter_args.next().unwrap();
 
     let Some(path_str) = iter_args.next() else {
-        eprintln!("please provide a file path");
-        return
+        return Err(Error::new(ErrorKind::InvalidInput, "please provide a file path"))
     };
+
     let mut tmp_path_str = path_str.clone();
     tmp_path_str.push_str(".tmp");
 
@@ -115,64 +116,34 @@ fn main() {
     let tmp_path = Path::new(&tmp_path_str);
 
     let mut data: Data = if path.exists() {
-        let mut file = match fs::File::options().read(true).open(path) {
-            Ok(f) => f,
-            Err(error) => {
-                eprintln!("couldn't open {}: {}", path.display(), error);
-                return
-            },
-        };
+        let mut file = fs::File::options().read(true).open(path)?;
     
         let mut content = String::new();
-        if let Err(error) = file.read_to_string(&mut content) {
-            eprintln!("couldn't read {}: {}", path.display(), error);
-            return
-        }
+        file.read_to_string(&mut content)?;
     
-        match serde_json::from_str(&content) {
-            Ok(d) => d,
-            Err(error) => {
-                eprintln!("serde_json parse error: {}", error);
-                return
-            }
-        }
+        serde_json::from_str(&content)?
     } else {
         tasks::Data::new()
     };
 
     let mut process_memory = ProcessMemory::new();
 
-    match iter_args.try_fold(
+    iter_args.try_fold(
         vec![],
         |messages, arg| process_memory.try_parse_arg(messages, &mut data, arg)
-    ) {
-        Ok(messages) => messages.into_iter().for_each(|message| println!("{}", message)),
-        Err(error) => eprintln!("{}", error)
-    }
+    )?.into_iter().for_each(|message| println!("{}", message));
 
-    let mut tmp_file = match fs::File::options().write(true).create_new(true).open(tmp_path) {
-        Ok(f) => f,
-        Err(error) => {
-            eprintln!("couldn't open {}: {}", path.display(), error);
-            return
-        },
-    };
+    let mut tmp_file = fs::File::options().write(true).create_new(true).open(tmp_path)?;
 
-    if let Err(error) = tmp_file.write_all(serde_json::to_string(&data).unwrap().as_bytes()) {
-        eprintln!("{}", error);
+    tmp_file.write_all(serde_json::to_string(&data).unwrap().as_bytes()).and_then(|_| {
+        std::fs::rename(&tmp_path, &path)
+    }).map_err(|e| {
         drop(tmp_file);
-        if let Err(error) = fs::remove_file(tmp_path_str) {
-            eprintln!("failure to cleanup: {}", error)
+        if let Err(error) = fs::remove_file(tmp_path_str.clone()) {
+            eprintln!("failure to delete {}: {}", tmp_path_str, error)
         };
-        return
-    }
+        e
+    })?;
 
-    if let Err(error) = std::fs::rename(&tmp_path, &path) {
-        eprintln!("{}", error);
-        drop(tmp_file);
-        if let Err(error) = fs::remove_file(tmp_path_str) {
-            eprintln!("failure to cleanup: {}", error)
-        };
-        return
-    };
+    Ok(())
 }
