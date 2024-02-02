@@ -1,9 +1,8 @@
 use std::env;
 use std::fs;
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::fs::File;
+use std::time::SystemTime;
 use tasks::*;
 
 pub mod tasks;
@@ -22,6 +21,8 @@ impl ProcessMemory {
     fn try_parse_arg(&mut self, mut messages: Vec<String>, data: &mut Data, arg: &String) -> Result<Vec<String>, String> {
         Ok(false)
         .and_then(|done| self.try_parse_new_task(&mut messages, data, arg, done))
+        .and_then(|done| self.try_parse_select_task(&mut messages, data, arg, done))
+        .and_then(|done| self.try_parse_display_task(&mut messages, data, arg, done))
         .and_then(|done| {
             if done {
                 Ok(messages)
@@ -41,9 +42,10 @@ impl ProcessMemory {
                     return Err(format!("expected = or nothing after -n, found {:?}", rest))
                 };
                 let Some(base) = data.tasks.get(&base_id.to_lowercase()) else {
-                    return Err(format!("invalid id ({}) for base task", rest))
+                    return Err(format!("invalid id ({}) for base task", base_id))
                 };
                 tasks::Task {
+                    time_created: SystemTime::now(),
                     base: Some(format!("{}", base_id)),
                     tags: base.tags.clone(),
                     name: base.name.clone(),
@@ -62,6 +64,32 @@ impl ProcessMemory {
             data.tasks.insert(id.clone(), new_task);
             messages.push(format!("task created with id: {}", id));
             self.selected_task_id = Some(id);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn try_parse_select_task(&mut self, _messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+        if done { return Ok(done) }
+        if let Some(task_id) = arg.strip_prefix("-s=") {
+            if !data.tasks.contains_key(&task_id.to_lowercase()) {
+                return Err(format!("invalid id ({}) for task", task_id))
+            }
+            self.selected_task_id = Some(format!("{}", task_id));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn try_parse_display_task(&mut self, messages: &mut Vec<String>, data: &mut Data, arg: &String, done: bool) -> Result<bool, String> {
+        if done { return Ok(done) }
+        if arg == "-d" {
+            let Some(task_id) = &self.selected_task_id else {
+                return Err(format!("no selected task for display"))
+            };
+            messages.push(format!("{:?}", data.tasks[task_id]));
             Ok(true)
         } else {
             Ok(false)
@@ -87,7 +115,7 @@ fn main() {
     let tmp_path = Path::new(&tmp_path_str);
 
     let mut data: Data = if path.exists() {
-        let mut file = match File::options().read(true).open(path) {
+        let mut file = match fs::File::options().read(true).open(path) {
             Ok(f) => f,
             Err(error) => {
                 eprintln!("couldn't open {}: {}", path.display(), error);
@@ -116,14 +144,13 @@ fn main() {
 
     match iter_args.try_fold(
         vec![],
-        |messages,
-        arg| process_memory.try_parse_arg(messages, &mut data, arg)
+        |messages, arg| process_memory.try_parse_arg(messages, &mut data, arg)
     ) {
-        Ok(messages) => messages.into_iter().for_each(|message| print!("{}", message)),
-        Err(error) => print!("{}", error)
+        Ok(messages) => messages.into_iter().for_each(|message| println!("{}", message)),
+        Err(error) => eprintln!("{}", error)
     }
 
-    let mut tmp_file = match File::options().write(true).create_new(true).open(tmp_path) {
+    let mut tmp_file = match fs::File::options().write(true).create_new(true).open(tmp_path) {
         Ok(f) => f,
         Err(error) => {
             eprintln!("couldn't open {}: {}", path.display(), error);
